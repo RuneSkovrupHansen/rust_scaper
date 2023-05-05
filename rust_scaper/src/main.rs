@@ -1,8 +1,10 @@
+use std::borrow::BorrowMut;
 use std::error;
 use std::fmt;
 
 use reqwest;
 use scraper;
+use scraper::ElementRef;
 
 // inner_html() returns the inner html, what is between the <> signs
 // value() returns the html element itself
@@ -83,30 +85,41 @@ impl StrandbergGuitarsCom {
     }
 }
 
+fn get_single_element<'a>(
+    document: &'a scraper::Html,
+    selector: &scraper::Selector,
+) -> Result<scraper::ElementRef<'a>, Box<dyn std::error::Error>> {
+    let elements: Vec<ElementRef> = document.select(&selector).collect();
+
+    if elements.len() != 1 {
+        return Err(Box::new(SimpleError::new(&format!(
+            "Found {} selection(s) for {:?}",
+            elements.len(),
+            selector
+        ))));
+    }
+
+    Ok(*elements.get(0).unwrap())
+}
+
 impl Stock for StrandbergGuitarsCom {
     fn update(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.stock_status = StockStatus::Unknown;
 
         let response = reqwest::blocking::get(&self.url)?.text()?;
         let document = scraper::Html::parse_document(&response);
-        let availability_selector =
-            scraper::Selector::parse("div.woocommerce-variation-availability>p")?;
 
-        let selections: Vec<String> = document
-            .select(&availability_selector)
-            .map(|e| e.inner_html())
-            .collect();
+        let name_selector = scraper::Selector::parse("div.product-info-wrapper>h1")?;
+        let stock_selector = scraper::Selector::parse("div.woocommerce-variation-availability>p")?;
 
-        if selections.len() > 1 {
-            return Err(Box::new(SimpleError::new(&format!(
-                "Found more than 1 selection for {:?}",
-                self
-            ))));
-        }
+        let name_element: ElementRef = get_single_element(&document, &name_selector)?;
+        let stock_element: ElementRef = get_single_element(&document, &stock_selector)?;
 
-        self.stock_status = match selections.get(0).unwrap().as_str() {
+        self.name = Some(name_element.inner_html());
+        self.stock_status = match stock_element.inner_html().as_str() {
             "Out of stock" => StockStatus::OutOfStock,
-            _ => StockStatus::InStock,
+            "In stock" | "Only 1 in stock" | "Only 2 in stock" => StockStatus::InStock,
+            _ => StockStatus::Unknown,
         };
 
         Ok(())
@@ -117,7 +130,7 @@ impl Stock for StrandbergGuitarsCom {
     }
 
     fn get_status(&self) -> String {
-        match self.name {
+        match &self.name {
             Some(name) => format!("Status for {} is {}", name, self.stock_status.to_string()),
             None => format!(
                 "Status for product with url {} is {}",
@@ -129,14 +142,18 @@ impl Stock for StrandbergGuitarsCom {
 }
 
 fn main() {
-    // let amber_guitar = StrandbergGuitarsCom::new(
-    //     "Amber guitar".to_owned(),
-    //     "https://strandbergguitars.com/eu/product/boden-standard-nx-6-charcoal/".to_owned(),
-    // );
+    let mut products: Vec<StrandbergGuitarsCom> = vec![];
+    products.push(StrandbergGuitarsCom::new(
+        "https://strandbergguitars.com/eu/product/boden-standard-nx-6-amber/".to_string(),
+    ));
+    products.push(StrandbergGuitarsCom::new(
+        "https://strandbergguitars.com/eu/product/boden-standard-nx-6-amber-refurb/".to_string(),
+    ));
 
-    // if amber_guitar.is_in_stock().unwrap() {
-    //     println!("{}", amber_guitar.get_in_stock_message());
-    // } else {
-    //     println!("The guitar is not in stock")
-    // }
+    products.iter_mut().for_each(|product| {
+        if let Err(error) = product.update() {
+            println!("Error occurred while updating, {:?}", error);
+        }
+        println!("{}", product.get_status())
+    })
 }
