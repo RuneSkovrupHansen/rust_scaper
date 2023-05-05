@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::error;
 use std::fmt;
 
@@ -8,6 +7,23 @@ use scraper::ElementRef;
 
 // inner_html() returns the inner html, what is between the <> signs
 // value() returns the html element itself
+
+fn get_single_element<'a>(
+    document: &'a scraper::Html,
+    selector: &scraper::Selector,
+) -> Result<scraper::ElementRef<'a>, Box<dyn std::error::Error>> {
+    let elements: Vec<ElementRef> = document.select(&selector).collect();
+
+    if elements.len() != 1 {
+        return Err(Box::new(SimpleError::new(&format!(
+            "Found {} selection(s) for {:?}",
+            elements.len(),
+            selector
+        ))));
+    }
+
+    Ok(*elements.get(0).unwrap())
+}
 
 /* Formatting, {:?} : separates the name of the thing being formatted from the next thing,
 which is the formatting options. The formatting option ? triggers the use of std::fmt::Debug
@@ -85,23 +101,6 @@ impl StrandbergGuitarsCom {
     }
 }
 
-fn get_single_element<'a>(
-    document: &'a scraper::Html,
-    selector: &scraper::Selector,
-) -> Result<scraper::ElementRef<'a>, Box<dyn std::error::Error>> {
-    let elements: Vec<ElementRef> = document.select(&selector).collect();
-
-    if elements.len() != 1 {
-        return Err(Box::new(SimpleError::new(&format!(
-            "Found {} selection(s) for {:?}",
-            elements.len(),
-            selector
-        ))));
-    }
-
-    Ok(*elements.get(0).unwrap())
-}
-
 impl Stock for StrandbergGuitarsCom {
     fn update(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.stock_status = StockStatus::Unknown;
@@ -116,9 +115,66 @@ impl Stock for StrandbergGuitarsCom {
         let stock_element: ElementRef = get_single_element(&document, &stock_selector)?;
 
         self.name = Some(name_element.inner_html());
-        self.stock_status = match stock_element.inner_html().as_str() {
-            "Out of stock" => StockStatus::OutOfStock,
-            "In stock" | "Only 1 in stock" | "Only 2 in stock" => StockStatus::InStock,
+        self.stock_status = match stock_element.inner_html().to_lowercase().trim() {
+            "out of stock" => StockStatus::OutOfStock,
+            "in stock" | "only 1 in stock" | "only 2 in stock" => StockStatus::InStock,
+            _ => StockStatus::Unknown,
+        };
+
+        Ok(())
+    }
+
+    fn is_in_stock(&self) -> bool {
+        return self.stock_status == StockStatus::InStock;
+    }
+
+    fn get_status(&self) -> String {
+        match &self.name {
+            Some(name) => format!("Status for {} is {}", name, self.stock_status.to_string()),
+            None => format!(
+                "Status for product with url {} is {}",
+                self.url,
+                self.stock_status.to_string()
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ThomannDe {
+    stock_status: StockStatus,
+    name: Option<String>,
+    url: String,
+}
+
+impl ThomannDe {
+    fn new(url: String) -> ThomannDe {
+        ThomannDe {
+            stock_status: StockStatus::Unknown,
+            name: None,
+            url,
+        }
+    }
+}
+
+impl Stock for ThomannDe {
+    fn update(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.stock_status = StockStatus::Unknown;
+
+        let response = reqwest::blocking::get(&self.url)?.text()?;
+        let document = scraper::Html::parse_document(&response);
+
+        // When the class name has multiple words separated by whitespace, select the last one
+        let name_selector = scraper::Selector::parse("div.product-title>h1")?;
+        let stock_selector =
+            scraper::Selector::parse("div.price-and-availability__tooltip-wrapper>span")?;
+
+        let name_element: ElementRef = get_single_element(&document, &name_selector)?;
+        let stock_element: ElementRef = get_single_element(&document, &stock_selector)?;
+        self.name = Some(name_element.inner_html());
+        self.stock_status = match stock_element.inner_html().to_lowercase().trim() {
+            "ikke på lager" | "på lager indenfor 3-4 uger" => StockStatus::OutOfStock,
+            "på lager" => StockStatus::InStock,
             _ => StockStatus::Unknown,
         };
 
@@ -142,13 +198,25 @@ impl Stock for StrandbergGuitarsCom {
 }
 
 fn main() {
-    let mut products: Vec<StrandbergGuitarsCom> = vec![];
-    products.push(StrandbergGuitarsCom::new(
+    // Trait objects must be allocated on the heap with Box
+    // since a vector is stack-allocated and can only store
+    // objects of a known size which objects implementing
+    // a trait might not be.
+    // https://stackoverflow.com/a/74974361/13308972
+
+    let mut products: Vec<Box<dyn Stock>> = vec![];
+    products.push(Box::new(StrandbergGuitarsCom::new(
         "https://strandbergguitars.com/eu/product/boden-standard-nx-6-amber/".to_string(),
-    ));
-    products.push(StrandbergGuitarsCom::new(
+    )));
+    products.push(Box::new(StrandbergGuitarsCom::new(
         "https://strandbergguitars.com/eu/product/boden-standard-nx-6-amber-refurb/".to_string(),
-    ));
+    )));
+    products.push(Box::new(ThomannDe::new(
+        "https://www.thomann.de/dk/strandberg_boden_standard_nx_6_amber.htm".to_string(),
+    )));
+    products.push(Box::new(ThomannDe::new(
+        "https://www.thomann.de/dk/strandberg_boden_standard_nx_6_charcoal.htm".to_string(),
+    )));
 
     products.iter_mut().for_each(|product| {
         if let Err(error) = product.update() {
