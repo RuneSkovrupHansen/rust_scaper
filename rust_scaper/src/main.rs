@@ -164,6 +164,7 @@ impl Stock for ThomannDe {
         let response = reqwest::blocking::get(&self.url)?.text()?;
         let document = scraper::Html::parse_document(&response);
 
+        // element_type.class_name>element_type
         // When the class name has multiple words separated by whitespace, select the last one
         let name_selector = scraper::Selector::parse("div.product-title>h1")?;
         let stock_selector =
