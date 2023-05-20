@@ -174,7 +174,9 @@ impl Stock for ThomannDe {
         let stock_element: ElementRef = get_single_element(&document, &stock_selector)?;
         self.name = Some(name_element.inner_html());
         self.stock_status = match stock_element.inner_html().to_lowercase().trim() {
-            "ikke på lager" | "på lager indenfor 3-4 uger" => StockStatus::OutOfStock,
+            "ikke på lager" | "på lager indenfor 3-4 uger" | "på lager indenfor 1-2 uger" => {
+                StockStatus::OutOfStock
+            }
             "på lager" => StockStatus::InStock,
             _ => StockStatus::Unknown,
         };
